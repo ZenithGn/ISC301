@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "verify:payos": "tsc scripts/verify-payos-signature.ts lib/payos.ts --outDir .tmp-payos-test --module commonjs --target es2022 --lib esnext,dom,dom.iterable --moduleResolution node --esModuleInterop --skipLibCheck --types node && node .tmp-payos-test/scripts/verify-payos-signature.js"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

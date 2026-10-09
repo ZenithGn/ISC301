@@ -1,6 +1,7 @@
 import { createClient } from './supabase/server';
 import { Category, Product } from './types';
 import { searchQuerySchema, SearchQueryParams } from './validations';
+import { asNumber, asString } from './format';
 
 /**
  * Lấy danh mục sản phẩm (hoạt động) trực tiếp từ database Supabase
@@ -142,7 +143,7 @@ export interface ProductSearchResult {
  * Tìm kiếm và lọc sản phẩm (C02 & C03) trực tiếp trên Supabase Database
  * Hỗ trợ lọc theo từ khóa, miền, danh mục, khoảng giá, sắp xếp và phân trang 12 sản phẩm/trang
  */
-export async function searchProducts(rawParams: Record<string, any>): Promise<ProductSearchResult> {
+export async function searchProducts(rawParams: Record<string, unknown>): Promise<ProductSearchResult> {
   const parsed = searchQuerySchema.safeParse(rawParams);
   const params: SearchQueryParams = parsed.success
     ? parsed.data
@@ -258,5 +259,304 @@ export async function searchProducts(rawParams: Record<string, any>): Promise<Pr
       pageSize,
       totalPages: 1,
     };
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* F03 – Banner trang chủ (bảng `banners`, RLS public read)            */
+/* ------------------------------------------------------------------ */
+
+export interface Banner {
+  banner_id: number;
+  title: string | null;
+  subtitle: string | null;
+  image_url: string;
+  link_url: string | null;
+  sort_order: number;
+  is_active: boolean;
+  starts_at: string | null;
+  ends_at: string | null;
+}
+
+/**
+ * Lấy banner đang hoạt động & còn trong thời gian hiệu lực, sắp xếp theo sort_order.
+ * Nếu bảng rỗng / lỗi / RLS chặn thì trả về [] để trang chủ rơi về ảnh tĩnh.
+ */
+export async function getActiveBanners(): Promise<Banner[]> {
+  try {
+    const supabase = await createClient();
+
+    const { data, error } = await supabase
+      .from('banners')
+      .select('*')
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true });
+
+    if (error || !data) {
+      if (error) console.error('Error fetching banners from Supabase:', error.message);
+      return [];
+    }
+
+    const now = Date.now();
+
+    return (data as Record<string, unknown>[])
+      .map((row): Banner | null => {
+        const imageUrl = asString(row.image_url);
+        if (!imageUrl) return null;
+
+        const startsAt = asString(row.starts_at);
+        const endsAt = asString(row.ends_at);
+        const startMs = startsAt ? new Date(startsAt).getTime() : null;
+        const endMs = endsAt ? new Date(endsAt).getTime() : null;
+
+        if (startMs !== null && Number.isFinite(startMs) && startMs > now) return null;
+        if (endMs !== null && Number.isFinite(endMs) && endMs < now) return null;
+
+        return {
+          banner_id: asNumber(row.banner_id, 0),
+          title: asString(row.title),
+          subtitle: asString(row.subtitle),
+          image_url: imageUrl,
+          link_url: asString(row.link_url),
+          sort_order: asNumber(row.sort_order, 0),
+          is_active: row.is_active !== false,
+          starts_at: startsAt,
+          ends_at: endsAt,
+        };
+      })
+      .filter((banner): banner is Banner => banner !== null);
+  } catch (err) {
+    console.error('getActiveBanners exception:', err);
+    return [];
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* C04 – Thư viện ảnh, đánh giá, mua kèm, nâng cấp                     */
+/* ------------------------------------------------------------------ */
+
+export interface ProductReview {
+  review_id: string;
+  rating: number;
+  comment: string | null;
+  reviewer_name: string;
+  created_at: string | null;
+}
+
+export interface CrossSellProduct {
+  product_id: number;
+  name: string;
+  slug: string;
+  price: number;
+  thumbnail_url: string | null;
+  times_bought_together: number;
+}
+
+export interface UpsellProduct {
+  product_id: number;
+  name: string;
+  slug: string;
+  price: number;
+  thumbnail_url: string | null;
+  price_difference: number;
+}
+
+function toRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+}
+
+function pickString(row: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === 'string' && value.trim() !== '') return value;
+  }
+  return null;
+}
+
+function pickNumber(row: Record<string, unknown>, keys: string[], fallback: number): number {
+  for (const key of keys) {
+    const value = row[key];
+    if (value === null || value === undefined || value === '') continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+/** Bảng `product_images` chưa được chốt schema ⇒ đọc phòng thủ, lỗi thì trả []. */
+export async function getProductImages(productId: number): Promise<string[]> {
+  try {
+    const supabase = await createClient();
+
+    const { data, error } = await supabase.from('product_images').select('*').eq('product_id', productId);
+
+    if (error || !data) return [];
+
+    const rows = data as Record<string, unknown>[];
+
+    return rows
+      .map((row, index) => ({ row, index }))
+      .sort((a, b) => {
+        const orderA = pickNumber(a.row, ['sort_order', 'display_order', 'position'], a.index);
+        const orderB = pickNumber(b.row, ['sort_order', 'display_order', 'position'], b.index);
+        return orderA - orderB;
+      })
+      .map(({ row }) => pickString(row, ['image_url', 'url', 'image', 'src', 'path']))
+      .filter((url): url is string => Boolean(url));
+  } catch (err) {
+    console.error('getProductImages exception:', err);
+    return [];
+  }
+}
+
+/** Đánh giá sản phẩm qua RPC `product_reviews(p_product_id, p_limit)`. */
+export async function getProductReviews(productId: number, limit = 10): Promise<ProductReview[]> {
+  try {
+    const supabase = await createClient();
+
+    const { data, error } = await supabase.rpc('product_reviews', {
+      p_product_id: productId,
+      p_limit: limit,
+    });
+
+    if (error || !data) {
+      if (error) console.error('product_reviews RPC error:', error.message);
+      return [];
+    }
+
+    const rows: unknown[] = Array.isArray(data) ? data : [data];
+
+    return rows.map((raw, index) => {
+      const row = toRecord(raw);
+      const rating = pickNumber(row, ['rating', 'rating_value', 'stars', 'score'], 5);
+      return {
+        review_id: String(row.review_id ?? row.id ?? `review-${index}`),
+        rating: Math.min(5, Math.max(1, Math.round(rating))),
+        comment: pickString(row, ['comment', 'content', 'body', 'review_text', 'note', 'text']),
+        reviewer_name:
+          pickString(row, [
+            'reviewer_name',
+            'customer_name',
+            'full_name',
+            'user_name',
+            'display_name',
+            'profile_name',
+          ]) ?? 'Khách hàng Hương Quê',
+        created_at: pickString(row, ['created_at', 'reviewed_at', 'created_date', 'date']),
+      };
+    });
+  } catch (err) {
+    console.error('getProductReviews exception:', err);
+    return [];
+  }
+}
+
+/** "Thường mua kèm" qua RPC `product_cross_sell(p_product_id)`. */
+export async function getCrossSellProducts(productId: number): Promise<CrossSellProduct[]> {
+  try {
+    const supabase = await createClient();
+
+    const { data, error } = await supabase.rpc('product_cross_sell', { p_product_id: productId });
+
+    if (error || !data) {
+      if (error) console.error('product_cross_sell RPC error:', error.message);
+      return [];
+    }
+
+    const rows: unknown[] = Array.isArray(data) ? data : [data];
+
+    return rows
+      .map((raw): CrossSellProduct | null => {
+        const row = toRecord(raw);
+        const id = pickNumber(row, ['product_id', 'id'], Number.NaN);
+        const slug = pickString(row, ['slug']);
+        const name = pickString(row, ['name', 'product_name']);
+        if (!Number.isFinite(id) || !slug || !name) return null;
+
+        return {
+          product_id: id,
+          name,
+          slug,
+          price: pickNumber(row, ['price'], 0),
+          thumbnail_url: pickString(row, ['thumbnail_url', 'image_url']),
+          times_bought_together: pickNumber(row, ['times_bought_together', 'times_bought', 'count'], 0),
+        };
+      })
+      .filter((item): item is CrossSellProduct => item !== null);
+  } catch (err) {
+    console.error('getCrossSellProducts exception:', err);
+    return [];
+  }
+}
+
+/** "Nâng cấp hộp quà" qua RPC `product_upsell(p_product_id)`. */
+export async function getUpsellProducts(productId: number): Promise<UpsellProduct[]> {
+  try {
+    const supabase = await createClient();
+
+    const { data, error } = await supabase.rpc('product_upsell', { p_product_id: productId });
+
+    if (error || !data) {
+      if (error) console.error('product_upsell RPC error:', error.message);
+      return [];
+    }
+
+    const rows: unknown[] = Array.isArray(data) ? data : [data];
+
+    return rows
+      .map((raw): UpsellProduct | null => {
+        const row = toRecord(raw);
+        const id = pickNumber(row, ['product_id', 'id'], Number.NaN);
+        const slug = pickString(row, ['slug']);
+        const name = pickString(row, ['name', 'product_name']);
+        if (!Number.isFinite(id) || !slug || !name) return null;
+
+        return {
+          product_id: id,
+          name,
+          slug,
+          price: pickNumber(row, ['price'], 0),
+          thumbnail_url: pickString(row, ['thumbnail_url', 'image_url']),
+          price_difference: pickNumber(row, ['price_difference', 'difference', 'price_gap'], 0),
+        };
+      })
+      .filter((item): item is UpsellProduct => item !== null);
+  } catch (err) {
+    console.error('getUpsellProducts exception:', err);
+    return [];
+  }
+}
+
+/** Fallback "Thường mua kèm": sản phẩm cùng danh mục khi RPC cross-sell rỗng. */
+export async function getProductsByCategory(
+  categoryId: number,
+  excludeProductId?: number,
+  limit = 4
+): Promise<Product[]> {
+  try {
+    const supabase = await createClient();
+
+    let query = supabase
+      .from('products')
+      .select('*, category:categories(*)')
+      .eq('is_active', true)
+      .eq('category_id', categoryId)
+      .order('sold_count', { ascending: false });
+
+    if (excludeProductId) {
+      query = query.neq('product_id', excludeProductId);
+    }
+
+    const { data, error } = await query.limit(limit);
+
+    if (error || !data) {
+      if (error) console.error('getProductsByCategory error:', error.message);
+      return [];
+    }
+
+    return data as Product[];
+  } catch (err) {
+    console.error('getProductsByCategory exception:', err);
+    return [];
   }
 }

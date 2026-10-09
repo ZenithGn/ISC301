@@ -1,228 +1,217 @@
 import Link from 'next/link';
-import { getAllProductsAdmin } from '@/lib/products';
-import { createClient } from '@/lib/supabase/server';
+import { getDashboardData } from '@/lib/actions/admin/data';
+import { ConfigNotice } from '@/components/admin/ConfigNotice';
+import { Alert, SectionTitle, adminCardClass } from '@/components/admin/FormBits';
+import { formatNumber, formatVND, paymentMethodLabel } from '@/lib/format';
 import {
-  Package,
-  Users,
-  UserPlus,
-  DollarSign,
+  Banknote,
   ShoppingBag,
-  ExternalLink,
-  Plus,
-  ShieldCheck,
   TrendingUp,
+  UserPlus,
+  AlertTriangle,
+  Clock,
 } from 'lucide-react';
 
-export default async function AdminHomePage() {
-  const products = await getAllProductsAdmin();
-  const activeProductsCount = products.filter((p) => p.is_active).length;
+export const dynamic = 'force-dynamic';
 
-  let totalCustomers = 0;
-  try {
-    const supabase = await createClient();
-    const { count: customerCount } = await supabase
-      .from('profiles')
-      .select('*', { count: 'exact', head: true });
-    totalCustomers = customerCount ?? 0;
-  } catch (err) {
-    console.error('Error fetching customer count:', err);
-  }
-  const newCustomersIn7Days = totalCustomers;
+export const metadata = { title: 'Tổng quan – Quản trị Hương Quê' };
 
-  // 5 sản phẩm mới thêm gần nhất
-  const recentProducts = [...products].sort((a, b) => b.product_id - a.product_id).slice(0, 5);
+function StatCard({
+  label,
+  value,
+  hint,
+  icon: Icon,
+  tone = 'amber',
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  icon: React.ComponentType<{ className?: string }>;
+  tone?: 'amber' | 'emerald' | 'blue' | 'rose';
+}) {
+  const tones = {
+    amber: 'bg-amber-500/10 text-amber-400',
+    emerald: 'bg-emerald-500/10 text-emerald-400',
+    blue: 'bg-blue-500/10 text-blue-400',
+    rose: 'bg-rose-500/10 text-rose-400',
+  } as const;
+
+  return (
+    <div className={`${adminCardClass} space-y-3`}>
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-stone-400 font-medium">{label}</span>
+        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${tones[tone]}`}>
+          <Icon className="w-4 h-4" />
+        </div>
+      </div>
+      <div className="text-2xl font-bold font-mono text-stone-100">{value}</div>
+      {hint ? <p className="text-[11px] text-stone-500">{hint}</p> : null}
+    </div>
+  );
+}
+
+const dash = (value: number | null, suffix = '') =>
+  value === null ? '—' : `${formatNumber(value)}${suffix}`;
+
+export default async function AdminDashboardPage() {
+  const { summary, daily, topProducts, paymentMix, errors } = await getDashboardData();
+
+  const maxRevenue = daily.reduce((max, point) => Math.max(max, point.revenue), 0);
+  const maxMix = paymentMix.reduce((max, slice) => Math.max(max, slice.orderCount), 0);
+  const revenueChart = daily.slice(-30);
 
   return (
     <div className="space-y-8 max-w-7xl">
-      {/* Title & Quick Actions */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-serif font-black text-stone-100">
-            Tổng Quan Hệ Thống (Màn A01)
-          </h1>
-          <p className="text-xs text-stone-400 mt-1">
-            Theo dõi tình hình kinh doanh quà Tết, tồn kho và các chỉ số vận hành cơ bản
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <Link
-            href="/san-pham"
-            target="_blank"
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-stone-900 border border-stone-800 text-stone-300 text-xs font-medium hover:bg-stone-800 transition-colors"
-          >
-            <span>Xem website bán hàng</span>
-            <ExternalLink className="w-3.5 h-3.5" />
-          </Link>
-        </div>
-      </div>
-
-      {/* 4 Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        {/* Card 1: Tổng sản phẩm đang bán */}
-        <div className="p-5 rounded-2xl bg-stone-900/80 border border-stone-800 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-stone-400 font-medium">Sản phẩm đang bán</span>
-            <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center">
-              <Package className="w-4 h-4" />
-            </div>
-          </div>
-          <div className="text-3xl font-bold font-mono text-stone-100">
-            {activeProductsCount}
-          </div>
-          <p className="text-[11px] text-stone-400 flex items-center gap-1">
-            <TrendingUp className="w-3 h-3 text-emerald-400" />
-            <span className="text-emerald-400 font-medium">100%</span> hoạt động bình thường
-          </p>
-        </div>
-
-        {/* Card 2: Số khách hàng */}
-        <div className="p-5 rounded-2xl bg-stone-900/80 border border-stone-800 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-stone-400 font-medium">Tổng khách hàng</span>
-            <div className="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-400 flex items-center justify-center">
-              <Users className="w-4 h-4" />
-            </div>
-          </div>
-          <div className="text-3xl font-bold font-mono text-stone-100">{totalCustomers}</div>
-          <p className="text-[11px] text-stone-400">Đã đăng ký tài khoản hồ sơ</p>
-        </div>
-
-        {/* Card 3: Khách mới 7 ngày */}
-        <div className="p-5 rounded-2xl bg-stone-900/80 border border-stone-800 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-stone-400 font-medium">Khách mới 7 ngày qua</span>
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
-              <UserPlus className="w-4 h-4" />
-            </div>
-          </div>
-          <div className="text-3xl font-bold font-mono text-stone-100">+{newCustomersIn7Days}</div>
-          <p className="text-[11px] text-emerald-400 font-medium">+18% so với tuần trước</p>
-        </div>
-
-        {/* Card 4: Doanh thu & Đơn hàng (Sắp có) */}
-        <div className="p-5 rounded-2xl bg-stone-900/40 border border-dashed border-stone-800 space-y-3 relative overflow-hidden">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-stone-500 font-medium">Doanh thu & Đơn hàng</span>
-            <div className="w-8 h-8 rounded-lg bg-stone-800 text-stone-500 flex items-center justify-center">
-              <DollarSign className="w-4 h-4" />
-            </div>
-          </div>
-          <div className="text-2xl font-bold font-mono text-stone-500">Sắp có</div>
-          <p className="text-[11px] text-amber-400/80">Khai thác trong Phase tiếp theo</p>
-        </div>
-      </div>
-
-      {/* Quick Links Banner */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <SectionTitle
+          code="A01"
+          title="Tổng quan hệ thống"
+          description="Doanh thu, đơn hàng và tồn kho quà Tết (số liệu lấy trực tiếp từ database, tính trong 30 ngày gần nhất)"
+        />
         <Link
-          href="#products"
-          className="p-5 rounded-2xl bg-gradient-to-r from-red-950/60 to-stone-900 border border-amber-600/30 hover:border-amber-500 transition-all flex items-center justify-between group"
+          href="/san-pham"
+          target="_blank"
+          className="px-4 py-2 rounded-xl bg-stone-900 border border-stone-800 text-stone-300 text-xs font-medium hover:bg-stone-800 transition-colors"
         >
-          <div className="space-y-1">
-            <h4 className="text-sm font-bold text-stone-100 group-hover:text-amber-300">
-              Quản lý danh mục & sản phẩm →
-            </h4>
-            <p className="text-xs text-stone-400">
-              Xem chi tiết giá bán, xuất xứ, trạng thái tồn kho 20+ món quà Tết
-            </p>
-          </div>
-          <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center">
-            <Package className="w-5 h-5" />
-          </div>
+          Xem website bán hàng
         </Link>
-
-        <div className="p-5 rounded-2xl bg-stone-900/40 border border-stone-800 flex items-center justify-between opacity-70 cursor-not-allowed">
-          <div className="space-y-1">
-            <h4 className="text-sm font-bold text-stone-300">Quản lý Đơn hàng (Đang phát triển)</h4>
-            <p className="text-xs text-stone-500">
-              Hệ thống xử lý đơn, phiếu giao quà và mã vận đơn đang dựng
-            </p>
-          </div>
-          <div className="w-10 h-10 rounded-xl bg-stone-800 text-stone-500 flex items-center justify-center">
-            <ShoppingBag className="w-5 h-5" />
-          </div>
-        </div>
       </div>
 
-      {/* Bảng 5 sản phẩm mới thêm */}
-      <div id="products" className="space-y-4 pt-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-base font-serif font-bold text-stone-100">
-              Sản Phẩm Quà Tết Mới Cập Nhật
-            </h3>
-            <p className="text-xs text-stone-400">Danh sách 5 sản phẩm gần nhất trong kho dữ liệu</p>
-          </div>
-          <span className="text-xs text-stone-400">Tổng cộng {products.length} sản phẩm</span>
-        </div>
+      <ConfigNotice />
 
-        <div className="rounded-2xl bg-stone-900/80 border border-stone-800 overflow-hidden shadow-lg">
+      {errors.length > 0 && (
+        <Alert tone="warning">
+          <p className="font-semibold mb-1">Một số số liệu chưa tải được</p>
+          <ul className="list-disc list-inside space-y-0.5">
+            {errors.map((message) => (
+              <li key={message}>{message}</li>
+            ))}
+          </ul>
+        </Alert>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+        <StatCard
+          label="Doanh thu (30 ngày)"
+          value={summary.totalRevenue === null ? '—' : formatVND(summary.totalRevenue)}
+          icon={Banknote}
+          tone="emerald"
+        />
+        <StatCard
+          label="Số đơn hàng"
+          value={dash(summary.totalOrders)}
+          icon={ShoppingBag}
+        />
+        <StatCard
+          label="Giá trị đơn trung bình"
+          value={summary.avgOrderValue === null ? '—' : formatVND(summary.avgOrderValue)}
+          icon={TrendingUp}
+        />
+        <StatCard
+          label="Khách hàng mới"
+          value={dash(summary.newCustomers)}
+          icon={UserPlus}
+          tone="blue"
+        />
+        <StatCard
+          label="Đơn cần xử lý"
+          value={dash(summary.ordersNeedingAction)}
+          icon={AlertTriangle}
+          tone="rose"
+        />
+        <StatCard
+          label="Đơn chờ thanh toán"
+          value={dash(summary.pendingPaymentOrders)}
+          icon={Clock}
+          tone="amber"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <section className={`${adminCardClass} space-y-4`}>
+          <h3 className="text-sm font-bold text-stone-100">Doanh thu 30 ngày</h3>
+          {revenueChart.length === 0 ? (
+            <p className="text-xs text-stone-500">Chưa có dữ liệu doanh thu.</p>
+          ) : (
+            <>
+              <div className="flex items-end gap-1 h-40">
+                {revenueChart.map((point) => {
+                  const height = maxRevenue > 0 ? Math.max(2, (point.revenue / maxRevenue) * 100) : 2;
+                  return (
+                    <div
+                      key={point.dateKey}
+                      className="flex-1 rounded-t bg-gradient-to-t from-amber-700 to-amber-400"
+                      style={{ height: `${height}%` }}
+                      title={`${point.label}: ${formatVND(point.revenue)} (${point.orderCount} đơn)`}
+                    />
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-stone-500">
+                Cao nhất: {formatVND(maxRevenue)} · {revenueChart.length} ngày có dữ liệu
+              </p>
+            </>
+          )}
+        </section>
+
+        <section className={`${adminCardClass} space-y-4`}>
+          <h3 className="text-sm font-bold text-stone-100">Tỷ lệ phương thức thanh toán</h3>
+          {paymentMix.length === 0 ? (
+            <p className="text-xs text-stone-500">Chưa có dữ liệu thanh toán.</p>
+          ) : (
+            <ul className="space-y-3">
+              {paymentMix.map((slice) => {
+                const width = maxMix > 0 ? Math.max(4, (slice.orderCount / maxMix) * 100) : 4;
+                return (
+                  <li key={slice.method} className="space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-stone-300">{paymentMethodLabel(slice.method)}</span>
+                      <span className="text-stone-400 font-mono">
+                        {slice.orderCount} đơn · {formatVND(slice.revenue)}
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-stone-800 overflow-hidden">
+                      <div className="h-full rounded-full bg-amber-500" style={{ width: `${width}%` }} />
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+      </div>
+
+      <section className={`${adminCardClass} space-y-4`}>
+        <h3 className="text-sm font-bold text-stone-100">Top 5 sản phẩm bán chạy</h3>
+        {topProducts.length === 0 ? (
+          <p className="text-xs text-stone-500">Chưa có dữ liệu bán hàng.</p>
+        ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs text-stone-300">
-              <thead className="bg-stone-950/60 uppercase font-mono tracking-wider text-stone-400 border-b border-stone-800">
+              <thead className="uppercase font-mono tracking-wider text-stone-400 border-b border-stone-800">
                 <tr>
-                  <th className="px-5 py-3.5">Mã & Ảnh</th>
-                  <th className="px-5 py-3.5">Tên sản phẩm</th>
-                  <th className="px-5 py-3.5">Miền / Xuất xứ</th>
-                  <th className="px-5 py-3.5">Giá bán</th>
-                  <th className="px-5 py-3.5">Tồn kho</th>
-                  <th className="px-5 py-3.5">Trạng thái</th>
+                  <th className="py-2.5 pr-4">#</th>
+                  <th className="py-2.5 pr-4">Sản phẩm</th>
+                  <th className="py-2.5 pr-4 text-right">Đã bán</th>
+                  <th className="py-2.5 text-right">Doanh thu</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-800">
-                {recentProducts.map((p) => (
-                  <tr key={p.product_id} className="hover:bg-stone-800/40 transition-colors">
-                    <td className="px-5 py-3 flex items-center gap-3">
-                      <img
-                        src={p.thumbnail_url || 'https://images.unsplash.com/photo-1549465220-1a8b9238cd48?w=100'}
-                        alt={p.name}
-                        className="w-10 h-10 rounded-lg object-cover border border-stone-700"
-                      />
-                      <span className="font-mono text-stone-400">#{p.product_id}</span>
-                    </td>
-                    <td className="px-5 py-3">
-                      <Link
-                        href={`/san-pham/${p.slug}`}
-                        target="_blank"
-                        className="font-semibold text-stone-200 hover:text-amber-400 transition-colors flex items-center gap-1"
-                      >
-                        {p.name}
-                        <ExternalLink className="w-3 h-3 text-stone-500" />
-                      </Link>
-                      <span className="text-[11px] text-stone-500 block truncate max-w-[260px]">
-                        {p.short_description}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3">
-                      <span className="capitalize">{p.region}</span> • {p.origin || 'VN'}
-                    </td>
-                    <td className="px-5 py-3 font-mono font-bold text-amber-400">
-                      {p.price.toLocaleString('vi-VN')}₫
-                    </td>
-                    <td className="px-5 py-3">
-                      <span className="px-2 py-0.5 rounded bg-stone-800 font-mono text-stone-200">
-                        {p.stock} {p.unit}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3">
-                      {p.is_active ? (
-                        <span className="px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 text-[11px]">
-                          Đang bán
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 rounded-full bg-stone-800 text-stone-400 text-[11px]">
-                          Đã ẩn
-                        </span>
-                      )}
+                {topProducts.map((product, index) => (
+                  <tr key={`${product.name}-${index}`}>
+                    <td className="py-2.5 pr-4 font-mono text-stone-500">{index + 1}</td>
+                    <td className="py-2.5 pr-4 text-stone-200">{product.name}</td>
+                    <td className="py-2.5 pr-4 text-right font-mono">{formatNumber(product.quantity)}</td>
+                    <td className="py-2.5 text-right font-mono text-amber-400">
+                      {formatVND(product.revenue)}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        </div>
-      </div>
+        )}
+      </section>
     </div>
   );
 }

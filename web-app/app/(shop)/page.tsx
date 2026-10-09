@@ -1,21 +1,39 @@
 import Link from 'next/link';
-import { getCategories, getFeaturedProducts } from '@/lib/products';
+import { getCategories, getFeaturedProducts, getActiveBanners } from '@/lib/products';
 import { getCurrentUser } from '@/lib/auth';
 import { ProductCard } from '@/components/ProductCard';
-import { Sparkles, Gift, ArrowRight, ShieldCheck, Truck, Clock, Shield } from 'lucide-react';
+import { NewsletterForm } from '@/components/NewsletterForm';
+import { Sparkles, Gift, ArrowRight, ShieldCheck, Truck, Clock } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
 
+const FALLBACK_HERO_IMAGE =
+  'https://images.unsplash.com/photo-1549465220-1a8b9238cd48?w=800&auto=format&fit=crop&q=80';
+
 export default async function HomePage() {
   const auth = await getCurrentUser();
+  // `user` còn dùng cho khối "Đặc Quyền Hội Viên" (chỉ hiện với khách chưa đăng nhập).
   const user = auth?.user;
-  const profile = auth?.profile;
-  const isAdmin = profile?.role === 'admin';
 
-  const [categories, featuredProducts] = await Promise.all([
+  const [categories, featuredProducts, banners] = await Promise.all([
     getCategories(),
     getFeaturedProducts(),
+    getActiveBanners(),
   ]);
+
+  // F03: banner thật từ bảng `banners`; bảng rỗng thì rơi về ảnh tĩnh.
+  const heroBanner = banners.length > 0 ? banners[0] : null;
+  const secondaryBanners = banners.slice(1, 4);
+
+  const heroImage = heroBanner?.image_url || FALLBACK_HERO_IMAGE;
+  const heroTitle = heroBanner?.title || 'Hộp Quà Tết Thịnh Vượng (Hộp Gỗ Sơn Mài VIP)';
+  const heroSubtitle =
+    heroBanner?.subtitle ||
+    '8 vật phẩm thượng hạng: Trà sen Tây Hồ, Mắc ca Đắk Nông, Nước mắm cốt Phú Quốc.';
+  const heroHref = heroBanner?.link_url || '/san-pham';
+  const isExternalHeroLink = /^https?:\/\//i.test(heroHref);
+  const heroLinkClass =
+    'text-xs font-semibold text-amber-400 hover:text-amber-300 flex items-center gap-1';
 
   return (
     <div className="space-y-16 pb-20">
@@ -24,47 +42,12 @@ export default async function HomePage() {
         <div className="absolute inset-0 opacity-10 bg-[radial-gradient(#f59e0b_1px,transparent_1px)] [background-size:16px_16px] pointer-events-none" />
 
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
-          {/* Personalized Greeting Banner based on auth state */}
-          {user ? (
-            <div className="mb-8 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row items-center justify-between gap-4 backdrop-blur-md">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-amber-500 text-stone-950 font-bold flex items-center justify-center">
-                  {(profile?.full_name || user.email || 'K')[0].toUpperCase()}
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-amber-200">
-                    Chào mừng trở lại, {profile?.full_name || user.email}!
-                  </p>
-                  <p className="text-xs text-amber-200/70">
-                    Đã lưu sẵn địa chỉ giao quà Tết & mã ưu đãi tri ân thành viên.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                {isAdmin && (
-                  <Link
-                    href="/admin"
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-500 text-stone-950 text-xs font-bold shadow hover:bg-amber-400 transition-all"
-                  >
-                    <Shield className="w-3.5 h-3.5" />
-                    Vào trang quản trị
-                  </Link>
-                )}
-                <Link
-                  href="/san-pham"
-                  className="px-4 py-2 rounded-xl bg-stone-900/80 border border-amber-500/30 text-amber-200 text-xs font-medium hover:bg-stone-800 transition-colors"
-                >
-                  Đơn hàng của tôi
-                </Link>
-              </div>
-            </div>
-          ) : (
-            <div className="mb-6 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-medium">
-              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              <span>Khai Xuân Như Ý • Quà Tết Đắc Lộc 2027</span>
-            </div>
-          )}
+          {/* Khách đã đăng nhập không còn thấy khối chào mừng riêng — thông tin tài khoản
+              đã nằm trên navlink của Header (/tai-khoan, /tai-khoan/don-hang). */}
+          <div className="mb-6 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-medium">
+            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+            <span>Khai Xuân Như Ý • Quà Tết Đắc Lộc 2027</span>
+          </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
             <div className="lg:col-span-7 space-y-6 text-center lg:text-left">
@@ -94,35 +77,81 @@ export default async function HomePage() {
               </div>
             </div>
 
-            {/* Banner Feature Card */}
-            <div className="lg:col-span-5">
+            {/* Banner Feature Card – lấy từ bảng `banners`, fallback ảnh tĩnh */}
+            <div className="lg:col-span-5 space-y-4">
               <div className="relative rounded-3xl overflow-hidden border border-amber-500/30 shadow-2xl bg-gradient-to-tr from-stone-900 to-red-950 p-3">
                 <img
-                  src="https://images.unsplash.com/photo-1549465220-1a8b9238cd48?w=800&auto=format&fit=crop&q=80"
-                  alt="Hộp quà Tết An Khang"
+                  src={heroImage}
+                  alt={heroTitle}
                   className="w-full h-80 object-cover rounded-2xl"
                 />
                 <div className="p-5 space-y-2">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
                     Bộ sưu tập giới hạn
                   </span>
-                  <h3 className="text-xl font-serif font-bold text-stone-100">
-                    Hộp Quà Tết Thịnh Vượng (Hộp Gỗ Sơn Mài VIP)
-                  </h3>
-                  <p className="text-xs text-stone-300">
-                    8 vật phẩm thượng hạng: Trà sen Tây Hồ, Mắc ca Đắk Nông, Nước mắm cốt Phú Quốc.
-                  </p>
+                  <h3 className="text-xl font-serif font-bold text-stone-100">{heroTitle}</h3>
+                  <p className="text-xs text-stone-300">{heroSubtitle}</p>
                   <div className="pt-2 flex items-center justify-between">
-                    <span className="text-lg font-bold text-amber-300 font-mono">1.190.000₫</span>
-                    <Link
-                      href="/san-pham/hop-qua-tet-thinh-vuong"
-                      className="text-xs font-semibold text-amber-400 hover:text-amber-300 flex items-center gap-1"
-                    >
-                      Xem ngay <ArrowRight className="w-3.5 h-3.5" />
-                    </Link>
+                    <span className="text-xs text-stone-400">Giao quà toàn quốc dịp Tết</span>
+                    {isExternalHeroLink ? (
+                      <a
+                        href={heroHref}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={heroLinkClass}
+                      >
+                        Xem ngay <ArrowRight className="w-3.5 h-3.5" />
+                      </a>
+                    ) : (
+                      <Link href={heroHref} className={heroLinkClass}>
+                        Xem ngay <ArrowRight className="w-3.5 h-3.5" />
+                      </Link>
+                    )}
                   </div>
                 </div>
               </div>
+
+              {secondaryBanners.length > 0 && (
+                <div className="grid grid-cols-3 gap-3">
+                  {secondaryBanners.map((banner) => {
+                    const href = banner.link_url || '/san-pham';
+                    const external = /^https?:\/\//i.test(href);
+                    const card = (
+                      <>
+                        <img
+                          src={banner.image_url}
+                          alt={banner.title || 'Banner khuyến mãi Hương Quê'}
+                          className="w-full h-20 object-cover"
+                          loading="lazy"
+                        />
+                        <span className="block px-2 py-1.5 text-[10px] font-semibold text-amber-200 truncate">
+                          {banner.title || 'Ưu đãi Tết'}
+                        </span>
+                      </>
+                    );
+
+                    return external ? (
+                      <a
+                        key={banner.banner_id}
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="rounded-2xl overflow-hidden border border-stone-800 bg-stone-900/80 hover:border-amber-500/50 transition-colors"
+                      >
+                        {card}
+                      </a>
+                    ) : (
+                      <Link
+                        key={banner.banner_id}
+                        href={href}
+                        className="rounded-2xl overflow-hidden border border-stone-800 bg-stone-900/80 hover:border-amber-500/50 transition-colors"
+                      >
+                        {card}
+                      </Link>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -264,6 +293,29 @@ export default async function HomePage() {
           </div>
         </section>
       )}
+
+      {/* 6. KHỐI ĐĂNG KÝ NHẬN BẢN TIN (F06) */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center rounded-3xl bg-stone-900/70 border border-stone-800 p-8 sm:p-12">
+          <div className="space-y-3">
+            <span className="text-xs font-bold uppercase tracking-wider text-amber-400">
+              Bản tin Hương Quê
+            </span>
+            <h2 className="text-2xl sm:text-3xl font-serif font-black text-stone-100">
+              Nhận Thông Tin Quà Tết Giới Hạn &amp; Ưu Đãi Vận Chuyển
+            </h2>
+            <p className="text-xs sm:text-sm text-stone-400 leading-relaxed">
+              Mỗi mùa Tết, Hương Quê chỉ mở bán số lượng giới hạn các hộp quà thủ công. Đăng ký email để
+              nhận thông báo sớm nhất về bộ sưu tập mới, mã giảm giá vận chuyển và lịch giao quà trước
+              Tết Nguyên Đán.
+            </p>
+          </div>
+
+          <div className="p-6 rounded-2xl bg-stone-950/70 border border-stone-800">
+            <NewsletterForm />
+          </div>
+        </div>
+      </section>
     </div>
   );
 }

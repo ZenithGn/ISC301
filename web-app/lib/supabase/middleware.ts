@@ -1,40 +1,58 @@
+import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
-import { verifyJwt, JWT_COOKIE_NAME } from '@/lib/jwt';
+import type { User } from '@supabase/supabase-js';
 
-export async function updateSession(request: NextRequest) {
-  let response = NextResponse.next({
-    request,
-  });
+/**
+ * Làm mới session Supabase trong middleware (@supabase/ssr).
+ * Middleware là nơi DUY NHẤT có thể ghi cookie auth đã refresh trong luồng request.
+ *
+ * Trả về:
+ *  - `user`        : người dùng hiện tại (null nếu không có phiên)
+ *  - `unavailable` : true khi KHÔNG đọc được phiên do lỗi tạm thời (mạng/timeout).
+ *    Khi đó KHÔNG được coi là "chưa đăng nhập" và KHÔNG được redirect về /dang-nhap.
+ */
+export async function updateSession(request: NextRequest): Promise<{
+  response: NextResponse;
+  user: User | null;
+  unavailable: boolean;
+}> {
+  let response = NextResponse.next({ request });
 
-  // Bảo vệ route /admin với JWT Token
-  if (request.nextUrl.pathname.startsWith('/admin')) {
-    const token = request.cookies.get(JWT_COOKIE_NAME)?.value;
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-    if (!token) {
-      const url = request.nextUrl.clone();
-      url.pathname = '/dang-nhap';
-      url.searchParams.set('next', request.nextUrl.pathname);
-      return NextResponse.redirect(url);
-    }
-
-    const payload = await verifyJwt(token);
-    if (!payload) {
-      // Token không hợp lệ hoặc hết hạn -> xóa cookie và yêu cầu đăng nhập lại
-      const url = request.nextUrl.clone();
-      url.pathname = '/dang-nhap';
-      url.searchParams.set('next', request.nextUrl.pathname);
-      const redirectRes = NextResponse.redirect(url);
-      redirectRes.cookies.delete(JWT_COOKIE_NAME);
-      return redirectRes;
-    }
-
-    if (payload.role !== 'admin') {
-      // Người dùng không có quyền quản trị viên -> chuyển về trang chủ
-      const url = request.nextUrl.clone();
-      url.pathname = '/';
-      return NextResponse.redirect(url);
-    }
+  if (!supabaseUrl || !supabaseAnonKey) {
+    return { response, user: null, unavailable: false };
   }
 
-  return response;
+  const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+    cookies: {
+      getAll() {
+        return request.cookies.getAll();
+      },
+      setAll(cookiesToSet) {
+        // Cập nhật request để các Server Component đọc được cookie mới trong cùng request
+        cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
+        response = NextResponse.next({ request });
+        cookiesToSet.forEach(({ name, value, options }) =>
+          response.cookies.set(name, value, options)
+        );
+      },
+    },
+  });
+
+  try {
+    const { data, error } = await supabase.auth.getUser();
+
+    if (error && error.name !== 'AuthSessionMissingError') {
+      // Lỗi tạm thời (timeout/mạng): giữ nguyên cookie phiên, đánh dấu unavailable.
+      console.error('[middleware] Không đọc được phiên:', error.message);
+      return { response, user: null, unavailable: true };
+    }
+
+    return { response, user: data.user ?? null, unavailable: false };
+  } catch (error) {
+    console.error('[middleware] Lỗi khi đọc phiên:', error);
+    return { response, user: null, unavailable: true };
+  }
 }

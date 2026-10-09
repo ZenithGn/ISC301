@@ -2,6 +2,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { Product } from '@/lib/types';
 import { Star, MapPin, Tag } from 'lucide-react';
+import { AddToCartButton } from '@/components/AddToCartButton';
 
 interface ProductCardProps {
   product: Product;
@@ -92,7 +93,7 @@ export function ProductCard({ product }: ProductCardProps) {
         </div>
 
         {/* Price & Action */}
-        <div className="pt-2 border-t border-stone-800/80 flex items-baseline justify-between">
+        <div className="pt-2 border-t border-stone-800/80 flex flex-wrap items-center justify-between gap-2">
           <div>
             <div className="flex items-baseline gap-2">
               <span className="text-base font-bold text-amber-400 font-mono">
@@ -107,12 +108,23 @@ export function ProductCard({ product }: ProductCardProps) {
             )}
           </div>
 
-          <Link
-            href={`/san-pham/${product.slug}`}
-            className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-300 hover:bg-amber-500 hover:text-stone-950 transition-all"
-          >
-            Chi tiết
-          </Link>
+          <div className="flex items-center gap-2">
+            {/* Thêm nhanh vào giỏ – tự vô hiệu hoá và hiện "Tạm hết hàng" khi stock <= 0 */}
+            <AddToCartButton
+              productId={product.product_id}
+              stock={product.stock}
+              quantity={1}
+              productName={product.name}
+              className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-all bg-amber-500 text-stone-950 shadow-sm shadow-amber-500/20 hover:bg-amber-400 disabled:cursor-not-allowed disabled:bg-stone-800 disabled:text-stone-400 disabled:shadow-none"
+            />
+
+            <Link
+              href={`/san-pham/${product.slug}`}
+              className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-300 hover:bg-amber-500 hover:text-stone-950 transition-all"
+            >
+              Chi tiết
+            </Link>
+          </div>
         </div>
       </div>
     </div>

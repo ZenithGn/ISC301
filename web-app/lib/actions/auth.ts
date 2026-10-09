@@ -4,7 +4,12 @@ import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import { createClient } from '@/lib/supabase/server';
 import { registerSchema, loginSchema, sanitizeNextUrl } from '@/lib/validations';
-import { signJwt, JWT_COOKIE_NAME, JWT_EXPIRES_IN_SECONDS } from '@/lib/jwt';
+import {
+  forgotPasswordSchema,
+  resetPasswordSchema,
+  updateProfileSchema,
+  changePasswordSchema,
+} from '@/lib/validations/auth';
 
 export type ActionResponse = {
   success: boolean;
@@ -12,23 +17,44 @@ export type ActionResponse = {
   fieldErrors?: Record<string, string[]>;
 };
 
+const CART_SESSION_COOKIE = 'cart_session';
+const GENERIC_AUTH_ERROR = 'Email hoặc mật khẩu không đúng. Vui lòng kiểm tra lại.';
+
+function appUrl(): string {
+  return (process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000').replace(/\/$/, '');
+}
+
 /**
- * Server Action C09: Đăng ký
- * Validate họ tên, email, SĐT, mật khẩu qua Zod
+ * Gộp giỏ hàng khách vãng lai vào tài khoản sau khi đăng nhập.
+ * Best-effort: lỗi gộp giỏ KHÔNG được chặn việc đăng nhập.
+ */
+async function mergeGuestCart(): Promise<void> {
+  try {
+    const sessionId = (await cookies()).get(CART_SESSION_COOKIE)?.value;
+    if (!sessionId) return;
+    const supabase = await createClient();
+    await supabase.rpc('cart_merge_guest', { p_session_id: sessionId });
+  } catch (error) {
+    console.error('[auth] Không gộp được giỏ hàng khách vãng lai:', error);
+  }
+}
+
+/**
+ * C09: Đăng ký tài khoản khách hàng.
+ * Trigger `handle_new_user` trong database tạo bản ghi `profiles` với role 'customer'.
  */
 export async function registerAction(
   prevState: ActionResponse | null,
   formData: FormData
 ): Promise<ActionResponse> {
-  const rawData = {
+  const validated = registerSchema.safeParse({
     fullName: formData.get('fullName'),
     email: formData.get('email'),
     phone: formData.get('phone'),
     password: formData.get('password'),
     confirmPassword: formData.get('confirmPassword'),
-  };
+  });
 
-  const validated = registerSchema.safeParse(rawData);
   if (!validated.success) {
     return {
       success: false,
@@ -39,126 +65,61 @@ export async function registerAction(
 
   const { email, password, fullName, phone } = validated.data;
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  if (!supabaseUrl || supabaseUrl.includes('mock-tet-gift')) {
-    // Ký JWT lưu đăng nhập ngay cả khi chạy demo local
-    const token = await signJwt({
-      sub: 'demo-user-' + Date.now(),
-      email,
-      role: 'customer',
-      full_name: fullName,
-      phone: phone || null,
-    });
-
-    const cookieStore = await cookies();
-    cookieStore.set(JWT_COOKIE_NAME, token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: JWT_EXPIRES_IN_SECONDS,
-    });
-
-    return {
-      success: true,
-      message: 'Đăng ký thành công! Đã tự động tạo phiên đăng nhập.',
-    };
-  }
-
   try {
     const supabase = await createClient();
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        data: {
-          full_name: fullName,
-          phone: phone,
-        },
+        data: { full_name: fullName, phone },
+        emailRedirectTo: `${appUrl()}/auth/callback`,
       },
     });
 
     if (error) {
-      // Xử lý khi chạm giới hạn gửi email của Supabase (email rate limit exceeded - HTTP 429)
-      if (error.message.toLowerCase().includes('rate limit')) {
-        console.warn('Supabase Auth: Chạm giới hạn email rate limit. Tự động cấp phiên JWT an toàn cho người dùng.');
-        const fallbackId = 'user-rl-' + Date.now();
-        const token = await signJwt({
-          sub: fallbackId,
-          email,
-          role: 'customer',
-          full_name: fullName,
-          phone: phone || null,
-        });
-
-        const cookieStore = await cookies();
-        cookieStore.set(JWT_COOKIE_NAME, token, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'lax',
-          path: '/',
-          maxAge: JWT_EXPIRES_IN_SECONDS,
-        });
-
-        return {
-          success: true,
-          message: 'Đăng ký thành công! Đã tự động kích hoạt phiên đăng nhập (Bypass Rate Limit).',
-        };
-      }
-
+      console.error('[auth] signUp lỗi:', error.message);
       return {
         success: false,
-        message: error.message || 'Không thể tạo tài khoản, vui lòng thử lại.',
+        message:
+          error.message.toLowerCase().includes('already registered') ||
+          error.message.toLowerCase().includes('already been registered')
+            ? 'Email này đã được đăng ký. Vui lòng đăng nhập hoặc đặt lại mật khẩu.'
+            : 'Không thể đăng ký. Vui lòng kiểm tra thông tin và thử lại.',
       };
     }
 
-    if (data.user) {
-      // Tự động tạo và lưu JWT Token vào cookie
-      const token = await signJwt({
-        sub: data.user.id,
-        email: data.user.email || email,
-        role: 'customer',
-        full_name: fullName,
-        phone: phone || null,
-      });
-
-      const cookieStore = await cookies();
-      cookieStore.set(JWT_COOKIE_NAME, token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        path: '/',
-        maxAge: JWT_EXPIRES_IN_SECONDS,
-      });
+    // Nếu Supabase đã bật xác nhận email: chưa có session, yêu cầu khách xác nhận email.
+    if (!data.session) {
+      return {
+        success: true,
+        message:
+          'Đăng ký thành công! Vui lòng kiểm tra hộp thư để xác nhận email, sau đó đăng nhập.',
+      };
     }
 
-    return {
-      success: true,
-      message: 'Đăng ký thành công! Bạn có thể bắt đầu mua sắm ngay.',
-    };
-  } catch (err: any) {
-    return {
-      success: false,
-      message: err?.message || 'Có lỗi xảy ra khi tạo tài khoản.',
-    };
+    await mergeGuestCart();
+  } catch (error) {
+    console.error('[auth] registerAction lỗi:', error);
+    return { success: false, message: 'Có lỗi xảy ra khi tạo tài khoản. Vui lòng thử lại.' };
   }
+
+  redirect('/');
 }
 
 /**
- * Server Action C08: Đăng nhập
- * Xác thực thông tin, tạo JWT Token và lưu vào HTTP-Only Cookie
+ * C08: Đăng nhập. Sai mật khẩu luôn trả về CÙNG một thông báo chung
+ * để không tiết lộ email nào có tồn tại trong hệ thống.
  */
 export async function loginAction(
   prevState: ActionResponse | null,
   formData: FormData
 ): Promise<ActionResponse> {
-  const rawData = {
+  const validated = loginSchema.safeParse({
     email: formData.get('email'),
     password: formData.get('password'),
     next: formData.get('next'),
-  };
+  });
 
-  const validated = loginSchema.safeParse(rawData);
   if (!validated.success) {
     return {
       success: false,
@@ -169,140 +130,240 @@ export async function loginAction(
 
   const { email, password, next } = validated.data;
   const redirectTarget = sanitizeNextUrl(next);
+  /** Có `?next=` do người dùng bị chặn ở đâu đó ⇒ không tự ý đổi đích đến. */
+  const hadExplicitNext = Boolean(next && next.trim() && next.trim() !== '/');
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  let userId = '';
-  let userEmail = email;
-  let userRole: 'customer' | 'admin' = email === 'admin@huongque.vn' ? 'admin' : 'customer';
-  let fullName = '';
-  let phone: string | null = null;
-  let isAuthenticated = false;
+  try {
+    const supabase = await createClient();
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
-  // 1. Thử xác thực với Supabase Auth nếu có cấu hình
-  if (supabaseUrl && !supabaseUrl.includes('mock-tet-gift')) {
+    if (error || !data.user) {
+      if (error?.message?.toLowerCase().includes('email not confirmed')) {
+        return {
+          success: false,
+          message: 'Email chưa được xác nhận. Vui lòng kiểm tra hộp thư và xác nhận trước khi đăng nhập.',
+        };
+      }
+      return { success: false, message: GENERIC_AUTH_ERROR };
+    }
+
+    await mergeGuestCart();
+  } catch (error) {
+    console.error('[auth] loginAction lỗi:', error);
+    return { success: false, message: GENERIC_AUTH_ERROR };
+  }
+
+  /**
+   * Quản trị viên vào thẳng dashboard (/admin).
+   * Nếu khách vào bằng link có `?next=...` (ví dụ bị chặn ở /admin) thì tôn trọng `next`.
+   * Lưu ý: phải gọi `redirect()` NGOÀI try/catch, nếu không NEXT_REDIRECT sẽ bị nuốt.
+   */
+  let isAdminUser = false;
+  if (!hadExplicitNext) {
     try {
       const supabase = await createClient();
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (!error && data?.user) {
-        isAuthenticated = true;
-        userId = data.user.id;
-        userEmail = data.user.email || email;
-        fullName = (data.user.user_metadata?.full_name as string) || '';
-        phone = (data.user.user_metadata?.phone as string) || null;
-
-        // Truy vấn bảng profiles để lấy role chính xác
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', data.user.id)
-          .maybeSingle();
-
-        if (profile) {
-          userRole = (profile.role as 'customer' | 'admin') || userRole;
-          if (profile.full_name) fullName = profile.full_name;
-          if (profile.phone) phone = profile.phone;
-        }
-      } else if (error?.message?.toLowerCase().includes('email not confirmed')) {
-        // Trường hợp Supabase chưa xác nhận email (do chưa bật/cấu hình SMTP thật)
-        console.warn('Supabase Auth: Email not confirmed, kích hoạt chế độ bypass an toàn cho user.');
-        
-        // Truy vấn bảng profiles để lấy thông tin đã lưu
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('email', email)
-          .maybeSingle();
-
-        isAuthenticated = true;
-        userId = profile?.id || 'user-' + Buffer.from(email).toString('hex').slice(0, 12);
-        userRole = (profile?.role as 'customer' | 'admin') || (email.startsWith('admin') ? 'admin' : 'customer');
-        fullName = profile?.full_name || (userRole === 'admin' ? 'Quản Trị Viên Hương Quê' : 'Khách Hàng Hương Quê');
-        phone = profile?.phone || null;
-      }
-    } catch (err) {
-      console.error('Supabase Auth error:', err);
+      const { data } = await supabase.rpc('is_admin');
+      isAdminUser = data === true;
+    } catch {
+      isAdminUser = false;
     }
   }
 
-  // 2. Hỗ trợ tài khoản admin mặc định hoặc môi trường thử nghiệm
-  if (!isAuthenticated) {
-    const isSpecialAdmin =
-      email === 'admin@huongque.vn' ||
-      email.startsWith('admin@') ||
-      email === 'admin';
-    const isAdminPass = ['admin123', 'admin', '123456', 'admin@123'].includes(password);
+  redirect(isAdminUser ? '/admin' : redirectTarget);
+}
 
-    if (isSpecialAdmin && isAdminPass) {
-      isAuthenticated = true;
-      userId = '56669802-ce29-417f-9efc-407fa484d457';
-      userRole = 'admin';
-      fullName = 'Quản Trị Viên Hương Quê';
-      phone = '0988888888';
-    } else if (
-      email === 'khachhang@huongque.vn' ||
-      email.startsWith('khachhang') ||
-      email.startsWith('user') ||
-      ['123456', 'khachhang123', 'user123', 'password'].includes(password)
-    ) {
-      // Hỗ trợ đăng nhập khách hàng thử nghiệm
-      isAuthenticated = true;
-      userId = 'khach-huongque-uuid-002';
-      userRole = 'customer';
-      fullName = 'Khách Hàng Mẫu';
-      phone = '0912345678';
-    }
+/** Đăng xuất: hủy session Supabase và quay về trang chủ. */
+export async function logoutAction(): Promise<void> {
+  try {
+    const supabase = await createClient();
+    await supabase.auth.signOut();
+  } catch (error) {
+    console.error('[auth] logoutAction lỗi:', error);
   }
-
-  if (!isAuthenticated) {
-    return {
-      success: false,
-      message: 'Email hoặc mật khẩu không đúng. Vui lòng kiểm tra lại.',
-    };
-  }
-
-  // 3. Tạo JWT Token bảo mật với payload người dùng
-  const jwtToken = await signJwt({
-    sub: userId,
-    email: userEmail,
-    role: userRole,
-    full_name: fullName,
-    phone: phone,
-  });
-
-  // 4. Lưu JWT vào HTTP-Only Cookie (Bảo mật XSS & tự động gửi lên server mỗi request)
-  const cookieStore = await cookies();
-  cookieStore.set(JWT_COOKIE_NAME, jwtToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: JWT_EXPIRES_IN_SECONDS,
-  });
-
-  redirect(redirectTarget);
+  redirect('/');
 }
 
 /**
- * Server Action: Đăng xuất
- * Xóa JWT Token khỏi Cookie và hủy session Supabase
+ * C10: yêu cầu email đặt lại mật khẩu.
+ * Luôn trả về cùng một thông báo, không tiết lộ email có tồn tại hay không.
  */
-export async function logoutAction(): Promise<void> {
-  const cookieStore = await cookies();
-  cookieStore.delete(JWT_COOKIE_NAME);
+export async function requestResetAction(
+  prevState: ActionResponse | null,
+  formData: FormData
+): Promise<ActionResponse> {
+  const validated = forgotPasswordSchema.safeParse({ email: formData.get('email') });
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  if (supabaseUrl && !supabaseUrl.includes('mock-tet-gift')) {
-    try {
-      const supabase = await createClient();
-      await supabase.auth.signOut();
-    } catch (e) {
-      // Bỏ qua lỗi nếu mất mạng
-    }
+  if (!validated.success) {
+    return {
+      success: false,
+      message: 'Email không hợp lệ',
+      fieldErrors: validated.error.flatten().fieldErrors,
+    };
   }
 
-  redirect('/');
+  const genericMessage =
+    'Nếu email này tồn tại trong hệ thống, chúng tôi đã gửi link đặt lại mật khẩu. Vui lòng kiểm tra hộp thư.';
+
+  try {
+    const supabase = await createClient();
+    await supabase.auth.resetPasswordForEmail(validated.data.email, {
+      redirectTo: `${appUrl()}/auth/callback?next=/dat-lai-mat-khau`,
+    });
+  } catch (error) {
+    console.error('[auth] requestResetAction lỗi:', error);
+  }
+
+  return { success: true, message: genericMessage };
+}
+
+/** C10: đặt mật khẩu mới (đã có session từ /auth/callback). */
+export async function resetPasswordAction(
+  prevState: ActionResponse | null,
+  formData: FormData
+): Promise<ActionResponse> {
+  const validated = resetPasswordSchema.safeParse({
+    password: formData.get('password'),
+    confirmPassword: formData.get('confirmPassword'),
+  });
+
+  if (!validated.success) {
+    return {
+      success: false,
+      message: 'Mật khẩu không hợp lệ',
+      fieldErrors: validated.error.flatten().fieldErrors,
+    };
+  }
+
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return {
+        success: false,
+        message: 'Link đặt lại mật khẩu không hợp lệ hoặc đã hết hạn. Vui lòng yêu cầu lại.',
+      };
+    }
+
+    const { error } = await supabase.auth.updateUser({ password: validated.data.password });
+    if (error) {
+      return { success: false, message: 'Không đặt lại được mật khẩu. Vui lòng thử lại.' };
+    }
+
+    return {
+      success: true,
+      message: 'Đặt lại mật khẩu thành công! Bạn có thể đăng nhập bằng mật khẩu mới.',
+    };
+  } catch (error) {
+    console.error('[auth] resetPasswordAction lỗi:', error);
+    return { success: false, message: 'Có lỗi xảy ra. Vui lòng thử lại.' };
+  }
+}
+
+/** C11: cập nhật hồ sơ. Trường `role` KHÔNG bao giờ được nhận từ form. */
+export async function updateProfileAction(
+  prevState: ActionResponse | null,
+  formData: FormData
+): Promise<ActionResponse> {
+  const validated = updateProfileSchema.safeParse({
+    fullName: formData.get('fullName'),
+    phone: formData.get('phone'),
+  });
+
+  if (!validated.success) {
+    return {
+      success: false,
+      message: 'Dữ liệu không hợp lệ',
+      fieldErrors: validated.error.flatten().fieldErrors,
+    };
+  }
+
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { success: false, message: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.' };
+    }
+
+    /**
+     * Bảng profiles chỉ cấp UPDATE cho các cột (full_name, phone, default_address)
+     * — xem `GRANT UPDATE (full_name, phone, default_address)` trong huongque_db_full.sql.
+     * `updated_at` do trigger set_updated_at tự cập nhật, KHÔNG gửi từ client
+     * (gửi thêm sẽ bị "permission denied for column").
+     */
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        full_name: validated.data.fullName,
+        phone: validated.data.phone,
+        default_address: validated.data.defaultAddress,
+      })
+      .eq('id', user.id);
+
+    if (error) {
+      console.error('[auth] updateProfile lỗi:', error.message);
+      return { success: false, message: 'Không lưu được thông tin. Vui lòng thử lại.' };
+    }
+
+    return { success: true, message: 'Đã cập nhật thông tin tài khoản.' };
+  } catch (error) {
+    console.error('[auth] updateProfileAction lỗi:', error);
+    return { success: false, message: 'Có lỗi xảy ra. Vui lòng thử lại.' };
+  }
+}
+
+/** C11: đổi mật khẩu – xác thực lại mật khẩu hiện tại trước khi đổi. */
+export async function changePasswordAction(
+  prevState: ActionResponse | null,
+  formData: FormData
+): Promise<ActionResponse> {
+  const validated = changePasswordSchema.safeParse({
+    currentPassword: formData.get('currentPassword'),
+    password: formData.get('password'),
+    confirmPassword: formData.get('confirmPassword'),
+  });
+
+  if (!validated.success) {
+    return {
+      success: false,
+      message: 'Dữ liệu không hợp lệ',
+      fieldErrors: validated.error.flatten().fieldErrors,
+    };
+  }
+
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user?.email) {
+      return { success: false, message: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.' };
+    }
+
+    // Xác thực mật khẩu hiện tại
+    const { error: signInError } = await supabase.auth.signInWithPassword({
+      email: user.email,
+      password: validated.data.currentPassword,
+    });
+
+    if (signInError) {
+      return { success: false, message: 'Mật khẩu hiện tại không đúng.' };
+    }
+
+    const { error } = await supabase.auth.updateUser({ password: validated.data.password });
+    if (error) {
+      return { success: false, message: 'Không đổi được mật khẩu. Vui lòng thử lại.' };
+    }
+
+    return { success: true, message: 'Đổi mật khẩu thành công.' };
+  } catch (error) {
+    console.error('[auth] changePasswordAction lỗi:', error);
+    return { success: false, message: 'Có lỗi xảy ra. Vui lòng thử lại.' };
+  }
 }

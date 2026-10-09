@@ -28,6 +28,9 @@ export default async function SanPhamPage({ searchParams }: SanPhamPageProps) {
 
   const { products, total, totalPages } = searchResult;
 
+  // Trang vượt quá dữ liệu (ví dụ ?page=99): báo rõ và cho đường về trang 1.
+  const isOutOfRangePage = products.length === 0 && currentPage > 1;
+
   // Helper để tạo URL giữ lại query string
   function buildFilterUrl(newParams: Record<string, string | number | undefined>) {
     const merged = { ...params, ...newParams };
@@ -206,7 +209,25 @@ export default async function SanPhamPage({ searchParams }: SanPhamPageProps) {
           </div>
 
           {/* Grid list */}
-          <ProductGrid products={products} />
+          {isOutOfRangePage ? (
+            <div className="py-12 text-center space-y-4 bg-stone-900/40 rounded-2xl border border-dashed border-stone-800 p-8">
+              <h3 className="text-lg font-serif font-bold text-stone-200">
+                Không còn sản phẩm ở trang này
+              </h3>
+              <p className="text-xs text-stone-400 max-w-md mx-auto">
+                Trang <strong className="text-amber-400">{currentPage}</strong> đã vượt quá danh sách
+                hiện có (tổng {total} sản phẩm). Hãy quay lại trang đầu để xem đầy đủ bộ sưu tập quà Tết.
+              </p>
+              <Link
+                href={buildFilterUrl({ page: 1 })}
+                className="inline-block text-xs font-semibold px-4 py-2 rounded-lg bg-amber-500 text-stone-950 hover:bg-amber-400 transition-colors"
+              >
+                Về trang 1
+              </Link>
+            </div>
+          ) : (
+            <ProductGrid products={products} />
+          )}
 
           {/* Pagination */}
           {totalPages > 1 && (

@@ -1,141 +1,184 @@
+import { cache } from 'react';
 import { redirect } from 'next/navigation';
-import { cookies } from 'next/headers';
+import type { User } from '@supabase/supabase-js';
 import { createClient } from './supabase/server';
 import { Profile } from './types';
-import { verifyJwt, JWT_COOKIE_NAME, signJwt, JWT_EXPIRES_IN_SECONDS } from './jwt';
 
 export interface AuthUserResult {
   user: {
     id: string;
     email: string;
-    user_metadata?: Record<string, any>;
+    user_metadata?: Record<string, unknown>;
   };
   profile: Profile | null;
 }
 
 /**
- * Lấy user đã xác thực qua JWT token lưu trong Cookie (kết hợp Supabase Auth)
+ * Kết quả đọc phiên. Ba trạng thái PHẢI phân biệt được:
+ *  - `authenticated`: có phiên hợp lệ.
+ *  - `anonymous`    : chắc chắn chưa đăng nhập (không có session/cookie).
+ *  - `unavailable`  : KHÔNG đọc được phiên do lỗi tạm thời (timeout, mạng chập,
+ *                     Supabase cold start). Tuyệt đối KHÔNG coi đây là đăng xuất.
  */
-export async function getCurrentUser(): Promise<AuthUserResult | null> {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(JWT_COOKIE_NAME)?.value;
+export type SessionState =
+  | { status: 'authenticated'; auth: AuthUserResult }
+  | { status: 'anonymous' }
+  | { status: 'unavailable'; reason: string };
 
-  // 1. Kiểm tra JWT Token trong Cookie trước tiên (cực nhanh, không nghẽn mạng)
-  if (token) {
-    const payload = await verifyJwt(token);
-    if (payload) {
-      return {
-        user: {
-          id: payload.sub,
-          email: payload.email,
-          user_metadata: {
-            full_name: payload.full_name,
-            phone: payload.phone,
-          },
-        },
-        profile: {
-          id: payload.sub,
-          email: payload.email,
-          full_name: payload.full_name || '',
-          phone: payload.phone || null,
-          role: payload.role,
-          created_at: new Date(payload.iat ? payload.iat * 1000 : Date.now()).toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-      };
-    }
+/** Lỗi ném ra khi không đọc được phiên ⇒ `app/error.tsx` hiện nút "Thử lại". */
+export class AuthUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuthUnavailableError';
   }
+}
 
-  // 2. Fallback: Nếu chưa có JWT cookie, kiểm tra Supabase Auth Session
+function describeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.name === 'TimeoutError' || /aborted|timeout/i.test(error.message)
+      ? 'Máy chủ xác thực phản hồi quá chậm'
+      : error.message;
+  }
+  return 'Lỗi không xác định khi đọc phiên đăng nhập';
+}
+
+/** Dựng AuthUserResult từ user đã xác thực + hồ sơ trong bảng profiles. */
+async function buildAuthResult(user: User): Promise<AuthUserResult> {
+  const supabase = await createClient();
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  const userProfile = (profile as Profile | null) ?? {
+    id: user.id,
+    email: user.email ?? '',
+    full_name: (user.user_metadata?.full_name as string) || '',
+    phone: (user.user_metadata?.phone as string) || null,
+    role: 'customer' as const,
+    created_at: user.created_at ?? new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  return {
+    user: {
+      id: user.id,
+      email: user.email ?? '',
+      user_metadata: user.user_metadata,
+    },
+    profile: userProfile,
+  };
+}
+
+/**
+ * Đọc phiên một lần cho MỖI request (React `cache`).
+ * Nhờ cache, Header + page + layout trong cùng một request chỉ tốn 1 lần gọi Supabase
+ * thay vì 2–3 lần như trước.
+ */
+export const getSessionState = cache(async (): Promise<SessionState> => {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    if (!supabaseUrl || supabaseUrl.includes('mock-tet-gift')) {
-      return null;
-    }
-
     const supabase = await createClient();
     const {
       data: { user },
       error,
     } = await supabase.auth.getUser();
 
-    if (error || !user) {
-      return null;
-    }
+    // Có phản hồi rõ ràng "không có phiên" ⇒ anonymous (không phải lỗi tạm thời).
+    if (!error && !user) return { status: 'anonymous' };
+    if (error && error.name !== 'AuthSessionMissingError') throw error;
+    if (!user) return { status: 'anonymous' };
 
-    // Lấy profile từ bảng profiles (chứa role)
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', user.id)
-      .maybeSingle();
-
-    const userProfile = profile as Profile | null;
-    const role = userProfile?.role || 'customer';
-    const fullName = userProfile?.full_name || (user.user_metadata?.full_name as string) || '';
-    const phone = userProfile?.phone || (user.user_metadata?.phone as string) || null;
-
-    // Tự động cấp bù JWT Token vào cookie để các request sau nhanh hơn
-    try {
-      const jwtToken = await signJwt({
-        sub: user.id,
-        email: user.email || '',
-        role: role,
-        full_name: fullName,
-        phone: phone,
-      });
-
-      cookieStore.set(JWT_COOKIE_NAME, jwtToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        path: '/',
-        maxAge: JWT_EXPIRES_IN_SECONDS,
-      });
-    } catch {
-      // Ignored in read-only server component contexts
-    }
-
-    return {
-      user: {
-        id: user.id,
-        email: user.email || '',
-        user_metadata: user.user_metadata,
-      },
-      profile: userProfile,
-    };
-  } catch {
-    return null;
+    const auth = await buildAuthResult(user);
+    return { status: 'authenticated', auth };
+  } catch (error) {
+    // Lỗi tạm thời: KHÔNG xoá cookie, KHÔNG coi là đăng xuất.
+    console.error('[auth] Không đọc được phiên:', describeError(error));
+    return { status: 'unavailable', reason: describeError(error) };
   }
+});
+
+/**
+ * Tương thích ngược cho các UI chỉ cần "có người dùng hay không"
+ * (Header, trang chủ…). Trả `null` khi chưa đăng nhập HOẶC khi tạm thời không đọc được.
+ * Muốn phân biệt hai trường hợp này thì dùng `getSessionState()`.
+ */
+export async function getCurrentUser(): Promise<AuthUserResult | null> {
+  const state = await getSessionState();
+  return state.status === 'authenticated' ? state.auth : null;
+}
+
+/** Chờ ngắn rồi thử lại 1 lần — dành cho lỗi mạng thoáng qua. */
+async function readSessionWithRetry(): Promise<SessionState> {
+  const first = await getSessionState();
+  if (first.status !== 'unavailable') return first;
+
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const second = await getSessionState();
+  return second;
 }
 
 /**
- * Server guard: Yêu cầu đăng nhập. Nếu chưa đăng nhập thì redirect về /dang-nhap?next=...
+ * Server guard: yêu cầu đăng nhập.
+ *  - `anonymous`    → redirect /dang-nhap?next=...
+ *  - `unavailable`  → NÉM AuthUnavailableError (app/error.tsx hiện "Thử lại"),
+ *                     KHÔNG redirect, KHÔNG xoá phiên.
  */
 export async function requireUser(nextPath?: string): Promise<AuthUserResult> {
-  const auth = await getCurrentUser();
-  if (!auth) {
+  const state = await readSessionWithRetry();
+
+  if (state.status === 'authenticated') return state.auth;
+
+  if (state.status === 'unavailable') {
+    throw new AuthUnavailableError(state.reason);
+  }
+
+  const nextQuery = nextPath ? `?next=${encodeURIComponent(nextPath)}` : '';
+  redirect(`/dang-nhap${nextQuery}`);
+}
+
+/** Server guard: yêu cầu quyền admin (quyền chỉ suy ra từ session + profiles + is_admin()). */
+export async function requireAdmin(nextPath: string = '/admin'): Promise<AuthUserResult> {
+  const state = await readSessionWithRetry();
+
+  if (state.status === 'unavailable') {
+    throw new AuthUnavailableError(state.reason);
+  }
+
+  if (state.status === 'anonymous') {
     const nextQuery = nextPath ? `?next=${encodeURIComponent(nextPath)}` : '';
     redirect(`/dang-nhap${nextQuery}`);
   }
+
+  const auth = state.auth;
+  if (auth.profile?.role === 'admin') return auth;
+
+  let isAdmin = false;
+  try {
+    const supabase = await createClient();
+    const { data, error } = await supabase.rpc('is_admin');
+    if (error) throw error;
+    isAdmin = data === true;
+  } catch (error) {
+    // Không kết luận được quyền do lỗi tạm thời ⇒ cũng không đá về trang chủ oan.
+    throw new AuthUnavailableError(describeError(error));
+  }
+
+  if (!isAdmin) redirect('/');
   return auth;
 }
 
-/**
- * Server guard: Yêu cầu quyền admin.
- * - Chưa đăng nhập -> redirect /dang-nhap?next=...
- * - Đã đăng nhập nhưng role = 'customer' -> redirect về '/' (trang chủ)
- */
-export async function requireAdmin(nextPath: string = '/admin'): Promise<AuthUserResult> {
-  const auth = await getCurrentUser();
-  if (!auth) {
-    const nextQuery = nextPath ? `?next=${encodeURIComponent(nextPath)}` : '';
-    redirect(`/dang-nhap${nextQuery}`);
+/** true nếu người dùng hiện tại là admin (dùng cho UI, không thay thế requireAdmin). */
+export async function isCurrentUserAdmin(): Promise<boolean> {
+  const state = await getSessionState();
+  if (state.status !== 'authenticated') return false;
+  if (state.auth.profile?.role === 'admin') return true;
+  try {
+    const supabase = await createClient();
+    const { data, error } = await supabase.rpc('is_admin');
+    return !error && data === true;
+  } catch {
+    return false;
   }
-
-  if (auth.profile?.role !== 'admin') {
-    redirect('/');
-  }
-
-  return auth;
 }

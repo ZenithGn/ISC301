@@ -1,24 +1,70 @@
 import { notFound } from 'next/navigation';
+import type { Metadata } from 'next';
 import Link from 'next/link';
-import { getProductBySlug, getBestSellingProducts } from '@/lib/products';
+import {
+  getProductBySlug,
+  getProductImages,
+  getProductReviews,
+  getCrossSellProducts,
+  getUpsellProducts,
+  getProductsByCategory,
+  getBestSellingProducts,
+  type CrossSellProduct,
+} from '@/lib/products';
+import { asNumber, formatVND } from '@/lib/format';
 import { ProductCard } from '@/components/ProductCard';
+import { ProductReviews } from '@/components/ProductReviews';
+import { ProductCrossSell, ProductUpsell } from '@/components/ProductCrossSell';
+import { ProductPurchasePanel } from '@/components/ProductPurchasePanel';
+import { ViewItemTracker } from '@/components/ViewItemTracker';
+import { ProductGallery } from './ProductGallery';
 import {
   MapPin,
   Building,
-  Tag,
   Star,
   ShieldCheck,
   Truck,
   RotateCcw,
   CheckCircle2,
   XCircle,
-  Share2,
 } from 'lucide-react';
+
+const FALLBACK_IMAGE =
+  'https://images.unsplash.com/photo-1549465220-1a8b9238cd48?w=800&auto=format&fit=crop&q=80';
 
 interface SanPhamDetailPageProps {
   params: Promise<{
     slug: string;
   }>;
+}
+
+export async function generateMetadata({ params }: SanPhamDetailPageProps): Promise<Metadata> {
+  const { slug } = await params;
+  const product = await getProductBySlug(slug);
+
+  if (!product) {
+    return {
+      title: 'Không tìm thấy sản phẩm | Hương Quê',
+      description: 'Sản phẩm bạn tìm kiếm không tồn tại hoặc đã ngừng kinh doanh.',
+    };
+  }
+
+  const description =
+    product.short_description ||
+    (product.description ? product.description.slice(0, 160) : `${product.name} – đặc sản quà Tết Hương Quê.`);
+
+  return {
+    title: `${product.name} | Hương Quê`,
+    description,
+    openGraph: {
+      title: product.name,
+      description,
+      type: 'website',
+      images: product.thumbnail_url
+        ? [{ url: product.thumbnail_url, alt: product.name }]
+        : [{ url: FALLBACK_IMAGE, alt: product.name }],
+    },
+  };
 }
 
 export default async function SanPhamDetailPage({ params }: SanPhamDetailPageProps) {
@@ -28,6 +74,37 @@ export default async function SanPhamDetailPage({ params }: SanPhamDetailPagePro
   // Bắt buộc: Trả về 404 khi slug không tồn tại hoặc sản phẩm is_active = false
   if (!product || !product.is_active) {
     notFound();
+  }
+
+  const [storedImages, reviews, crossSellFromRpc, upsellItems, relatedProducts] = await Promise.all([
+    getProductImages(product.product_id),
+    getProductReviews(product.product_id, 10),
+    getCrossSellProducts(product.product_id),
+    getUpsellProducts(product.product_id),
+    getBestSellingProducts(4),
+  ]);
+
+  // Thư viện ảnh: product_images nếu có, luôn fallback về thumbnail_url.
+  const galleryImages =
+    storedImages.length > 0
+      ? storedImages
+      : [product.thumbnail_url || FALLBACK_IMAGE];
+
+  // "Thường mua kèm": RPC rỗng thì lấy sản phẩm cùng danh mục.
+  let crossSellItems: CrossSellProduct[] = crossSellFromRpc;
+  let isCategoryFallback = false;
+
+  if (crossSellItems.length === 0 && product.category_id) {
+    const sameCategory = await getProductsByCategory(product.category_id, product.product_id, 4);
+    crossSellItems = sameCategory.map((item) => ({
+      product_id: item.product_id,
+      name: item.name,
+      slug: item.slug,
+      price: item.price,
+      thumbnail_url: item.thumbnail_url,
+      times_bought_together: 0,
+    }));
+    isCategoryFallback = crossSellItems.length > 0;
   }
 
   const discountPercent =
@@ -42,10 +119,19 @@ export default async function SanPhamDetailPage({ params }: SanPhamDetailPagePro
     ba_mien: 'Ba Miền Hội Tụ',
   };
 
-  const relatedProducts = await getBestSellingProducts(4);
+  const ratingAvg = asNumber(product.rating_avg, 5);
+  const inStock = product.stock > 0;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-16">
+      {/* GA4 view_item – không gửi email/SĐT */}
+      <ViewItemTracker
+        productId={product.product_id}
+        name={product.name}
+        price={product.price}
+        categoryName={product.category?.name ?? null}
+      />
+
       {/* Breadcrumb */}
       <nav className="text-xs text-stone-400 flex items-center gap-2">
         <Link href="/" className="hover:text-amber-300">
@@ -55,6 +141,17 @@ export default async function SanPhamDetailPage({ params }: SanPhamDetailPagePro
         <Link href="/san-pham" className="hover:text-amber-300">
           Sản phẩm
         </Link>
+        {product.category && (
+          <>
+            <span>/</span>
+            <Link
+              href={`/san-pham?danh_muc=${product.category.slug}`}
+              className="hover:text-amber-300"
+            >
+              {product.category.name}
+            </Link>
+          </>
+        )}
         <span>/</span>
         <span className="text-amber-400 font-medium truncate max-w-[200px] sm:max-w-none">
           {product.name}
@@ -63,20 +160,13 @@ export default async function SanPhamDetailPage({ params }: SanPhamDetailPagePro
 
       {/* Main Product Info Section */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
-        {/* Left: Product Image */}
-        <div className="lg:col-span-6 space-y-4">
-          <div className="relative aspect-square w-full rounded-3xl overflow-hidden bg-stone-900 border border-stone-800 shadow-xl">
-            <img
-              src={product.thumbnail_url || 'https://images.unsplash.com/photo-1549465220-1a8b9238cd48?w=800'}
-              alt={product.name}
-              className="w-full h-full object-cover object-center"
-            />
-            {discountPercent && (
-              <span className="absolute top-4 right-4 bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full shadow-lg">
-                Tiết kiệm {discountPercent}%
-              </span>
-            )}
-          </div>
+        {/* Left: Product Gallery */}
+        <div className="lg:col-span-6">
+          <ProductGallery
+            images={galleryImages}
+            productName={product.name}
+            discountPercent={discountPercent}
+          />
         </div>
 
         {/* Right: Details & Order Box */}
@@ -86,6 +176,14 @@ export default async function SanPhamDetailPage({ params }: SanPhamDetailPagePro
               <span className="text-xs font-medium px-3 py-1 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30">
                 {regionNames[product.region] || 'Đặc sản vùng miền'}
               </span>
+              {product.category && (
+                <Link
+                  href={`/san-pham?danh_muc=${product.category.slug}`}
+                  className="text-xs font-medium px-3 py-1 rounded-full bg-stone-900 text-stone-300 border border-stone-700 hover:border-amber-500/40 transition-colors"
+                >
+                  {product.category.name}
+                </Link>
+              )}
               {product.is_featured && (
                 <span className="text-xs font-medium px-3 py-1 rounded-full bg-red-500/10 text-red-300 border border-red-500/30">
                   Quà Tết Tiêu Biểu
@@ -101,7 +199,7 @@ export default async function SanPhamDetailPage({ params }: SanPhamDetailPagePro
             <div className="flex items-center gap-4 text-xs text-stone-400 pt-1">
               <div className="flex items-center gap-1 text-amber-400 font-bold">
                 <Star className="w-4 h-4 fill-amber-400" />
-                <span>{product.rating_avg.toFixed(1)}</span>
+                <span>{ratingAvg.toFixed(1)}</span>
                 <span className="text-stone-500 font-normal">({product.rating_count} đánh giá)</span>
               </div>
               <span>•</span>
@@ -114,11 +212,11 @@ export default async function SanPhamDetailPage({ params }: SanPhamDetailPagePro
           {/* Pricing Box */}
           <div className="p-5 rounded-2xl bg-stone-900/90 border border-stone-800 flex items-baseline gap-4">
             <div className="text-3xl font-bold font-mono text-amber-400">
-              {product.price.toLocaleString('vi-VN')}₫
+              {formatVND(product.price)}
             </div>
             {product.compare_at_price && (
               <div className="text-sm text-stone-500 line-through">
-                {product.compare_at_price.toLocaleString('vi-VN')}₫
+                {formatVND(product.compare_at_price)}
               </div>
             )}
             <div className="text-xs text-stone-400">/ 1 {product.unit}</div>
@@ -145,10 +243,10 @@ export default async function SanPhamDetailPage({ params }: SanPhamDetailPagePro
           {/* Stock status indicator */}
           <div className="flex items-center gap-2 text-xs">
             <span className="text-stone-400">Tình trạng tồn kho:</span>
-            {product.stock > 0 ? (
+            {inStock ? (
               <span className="flex items-center gap-1.5 font-semibold text-emerald-400">
                 <CheckCircle2 className="w-4 h-4" />
-                Còn {product.stock} {product.unit} sẵn sàng giao
+                Còn {product.stock} {product.unit}
               </span>
             ) : (
               <span className="flex items-center gap-1.5 font-semibold text-rose-500">
@@ -158,45 +256,13 @@ export default async function SanPhamDetailPage({ params }: SanPhamDetailPagePro
             )}
           </div>
 
-          {/* Quantity selector (UI for next sprint) */}
-          <div className="space-y-3 pt-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-stone-300 block">
-              Chọn số lượng:
-            </label>
-            <div className="flex items-center gap-4">
-              <div className="flex items-center border border-stone-700 rounded-xl bg-stone-900 overflow-hidden">
-                <button
-                  type="button"
-                  className="px-4 py-2.5 hover:bg-stone-800 text-stone-300 transition-colors"
-                  aria-label="Giảm"
-                >
-                  -
-                </button>
-                <span className="px-4 py-2.5 text-xs font-bold text-stone-100 min-w-[40px] text-center">
-                  1
-                </span>
-                <button
-                  type="button"
-                  className="px-4 py-2.5 hover:bg-stone-800 text-stone-300 transition-colors"
-                  aria-label="Tăng"
-                >
-                  +
-                </button>
-              </div>
-
-              <button
-                type="button"
-                disabled={product.stock <= 0}
-                className={`flex-1 py-3 px-6 rounded-xl font-bold text-xs tracking-wider uppercase transition-all shadow-md ${
-                  product.stock > 0
-                    ? 'bg-gradient-to-r from-amber-500 to-amber-400 text-stone-950 hover:brightness-110 shadow-amber-500/20'
-                    : 'bg-stone-800 text-stone-500 cursor-not-allowed'
-                }`}
-              >
-                {product.stock > 0 ? 'Đặt Hộp Quà (Sắp ra mắt giỏ hàng)' : 'Hết Hàng'}
-              </button>
-            </div>
-          </div>
+          {/* Quantity selector + Add to cart (nút tự vô hiệu hoá khi hết hàng) */}
+          <ProductPurchasePanel
+            productId={product.product_id}
+            stock={product.stock}
+            price={product.price}
+            unit={product.unit}
+          />
 
           {/* Guarantees */}
           <div className="p-4 rounded-2xl bg-stone-900/40 border border-stone-800/80 space-y-2 text-xs text-stone-400">
@@ -206,7 +272,16 @@ export default async function SanPhamDetailPage({ params }: SanPhamDetailPagePro
             </div>
             <div className="flex items-center gap-2">
               <Truck className="w-4 h-4 text-amber-400" />
-              <span>Giao hỏa tốc nội thành 2h, đóng gói hộp Tết cao cấp chống móp méo</span>
+              <span>Miễn phí giao hàng cho đơn từ 500.000₫ – phí cố định 30.000₫</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <RotateCcw className="w-4 h-4 text-amber-400" />
+              <span>
+                Đổi trả trong 48h nếu hộp quà hư hỏng –{' '}
+                <Link href="/chinh-sach-doi-tra" className="text-amber-400 hover:underline">
+                  xem chính sách
+                </Link>
+              </span>
             </div>
           </div>
         </div>
@@ -215,15 +290,40 @@ export default async function SanPhamDetailPage({ params }: SanPhamDetailPagePro
       {/* Description Section */}
       <div className="space-y-4 pt-10 border-t border-stone-800">
         <h2 className="text-xl font-serif font-bold text-stone-100">
-          Mô Tả Chi Tiết & Ý Nghĩa Ngày Tết
+          Mô Tả Chi Tiết &amp; Ý Nghĩa Ngày Tết
         </h2>
         <div className="prose prose-invert max-w-none text-stone-300 text-sm leading-relaxed space-y-4">
           <p>{product.description || product.short_description}</p>
           <p>
-            Tết Nguyên Đán là thời khắc sum họp linh thiêng của gia đình Việt. Những món quà biếu không chỉ chứa đựng hương vị tinh túy của đất trời mà còn là thông điệp yêu thương, lời chúc vẹn tròn trao gửi tới người thân, bạn bè và đối tác.
+            Tết Nguyên Đán là thời khắc sum họp linh thiêng của gia đình Việt. Những món quà biếu không
+            chỉ chứa đựng hương vị tinh túy của đất trời mà còn là thông điệp yêu thương, lời chúc vẹn
+            tròn trao gửi tới người thân, bạn bè và đối tác.
           </p>
         </div>
       </div>
+
+      {/* Reviews */}
+      <div className="pt-10 border-t border-stone-800">
+        <ProductReviews
+          reviews={reviews}
+          ratingAvg={ratingAvg}
+          ratingCount={product.rating_count}
+        />
+      </div>
+
+      {/* Cross-sell */}
+      {crossSellItems.length > 0 && (
+        <div className="pt-10 border-t border-stone-800">
+          <ProductCrossSell items={crossSellItems} isCategoryFallback={isCategoryFallback} />
+        </div>
+      )}
+
+      {/* Upsell */}
+      {upsellItems.length > 0 && (
+        <div className="pt-10 border-t border-stone-800">
+          <ProductUpsell items={upsellItems} />
+        </div>
+      )}
 
       {/* Related Products */}
       <div className="space-y-6 pt-10 border-t border-stone-800">

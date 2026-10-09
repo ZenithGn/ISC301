@@ -39,6 +39,8 @@ export interface Profile {
   email: string;
   full_name: string;
   phone: string | null;
+  /** Địa chỉ giao hàng mặc định (cột `profiles.default_address`). */
+  default_address?: string | null;
   role: 'customer' | 'admin';
   created_at: string;
   updated_at: string;
