@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { requireAdmin } from '@/lib/auth';
 import { logoutAction } from '@/lib/actions/auth';
 import { AdminSidebarNav } from '@/components/admin/AdminSidebarNav';
-import { Home, LogOut, Shield } from 'lucide-react';
+import { LogOut, Shield } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
 
@@ -49,24 +49,16 @@ export default async function AdminLayout({
             <p className="text-[10px] text-stone-400">Quyền: Quản trị viên</p>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Link
-              href="/"
-              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-medium transition-colors"
+          <form action={logoutAction}>
+            <button
+              type="submit"
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-stone-700 hover:bg-red-950/80 hover:text-rose-300 text-stone-300 text-xs font-medium transition-colors"
+              title="Đăng xuất khỏi trang quản trị"
             >
-              <Home className="w-3.5 h-3.5" />
-              <span>Về shop</span>
-            </Link>
-            <form action={logoutAction}>
-              <button
-                type="submit"
-                className="p-2 rounded-xl border border-stone-700 hover:bg-red-950/80 hover:text-rose-300 text-stone-400 transition-colors"
-                title="Đăng xuất"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </form>
-          </div>
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Đăng xuất</span>
+            </button>
+          </form>
         </div>
       </aside>
 

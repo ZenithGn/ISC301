@@ -10,7 +10,7 @@ import { AdminPagination } from '@/components/admin/AdminPagination';
 import { ConfigNotice } from '@/components/admin/ConfigNotice';
 import { adminCardClass, adminInputClass, SectionTitle } from '@/components/admin/FormBits';
 import { formatNumber, formatVND } from '@/lib/format';
-import { ExternalLink, Plus, Search } from 'lucide-react';
+import { Plus, Search } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
 
@@ -170,14 +170,7 @@ export default async function AdminProductsPage({
                         {product.is_active ? 'Ẩn' : 'Hiện'}
                       </button>
                     </form>
-                    <Link
-                      href={`/san-pham/${product.slug}`}
-                      target="_blank"
-                      className="p-1.5 rounded-lg text-stone-500 hover:text-amber-400"
-                      title="Xem trên website"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </Link>
+
                   </div>
                 </td>
               </tr>

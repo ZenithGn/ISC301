@@ -1,4 +1,3 @@
-import Link from 'next/link';
 import { getDashboardData } from '@/lib/actions/admin/data';
 import { ConfigNotice } from '@/components/admin/ConfigNotice';
 import { Alert, SectionTitle, adminCardClass } from '@/components/admin/FormBits';
@@ -68,13 +67,7 @@ export default async function AdminDashboardPage() {
           title="Tổng quan hệ thống"
           description="Doanh thu, đơn hàng và tồn kho quà Tết (số liệu lấy trực tiếp từ database, tính trong 30 ngày gần nhất)"
         />
-        <Link
-          href="/san-pham"
-          target="_blank"
-          className="px-4 py-2 rounded-xl bg-stone-900 border border-stone-800 text-stone-300 text-xs font-medium hover:bg-stone-800 transition-colors"
-        >
-          Xem website bán hàng
-        </Link>
+
       </div>
 
       <ConfigNotice />
